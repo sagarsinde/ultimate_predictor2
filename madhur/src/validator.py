@@ -106,26 +106,26 @@ def _train_single_model(model_type, window_label, train_df, active_groups):
     if model_type in FEATURE_MODELS:
         model_m.fit(X_m, y_m.values)
     else:
-        model_m.fit(None, None, sequence=m_seq, dow_sequence=dow_seq)
+        model_m.fit(None, None, sequence=m_seq)
 
     # Train evening model
     model_e = model_cls()
     if model_type in FEATURE_MODELS:
         model_e.fit(X_e, y_e.values)
     else:
-        model_e.fit(None, None, sequence=e_seq, dow_sequence=dow_seq)
+        model_e.fit(None, None, sequence=e_seq)
 
     return model_m, model_e, feature_cols_m
 
 
-def _predict_single(model_m, model_e, model_type, X_pred_m, X_pred_e, last_m_digit, last_e_digit, current_dow=None):
+def _predict_single(model_m, model_e, model_type, X_pred_m, X_pred_e, last_m_digits, last_e_digits, current_dow=None):
     """Get probability distributions from a trained model pair."""
     if model_type in FEATURE_MODELS:
         m_probs = model_m.predict_proba(X_pred_m)
         e_probs = model_e.predict_proba(X_pred_e)
     else:
-        m_probs = model_m.predict_proba(last_digit=last_m_digit, current_dow=current_dow)
-        e_probs = model_e.predict_proba(last_digit=last_e_digit, current_dow=current_dow)
+        m_probs = model_m.predict_proba(last_digits=last_m_digits, current_dow=current_dow)
+        e_probs = model_e.predict_proba(last_digits=last_e_digits, current_dow=current_dow)
     return m_probs, e_probs
 
 
@@ -269,8 +269,8 @@ def run_walk_forward(
                     feat_only_e = [c for c in last_row_feats_e.columns if c != '_date']
                     X_pred_e = last_row_feats_e[feat_only_e].values
 
-                    last_m = int(context_df.iloc[-1]['Morning_number'])
-                    last_e = int(context_df.iloc[-1]['Evening_number'])
+                    last_m = context_df['Morning_number'].dropna().astype(int).values
+                    last_e = context_df['Evening_number'].dropna().astype(int).values
                     
                     pred_date = pd.to_datetime(df.iloc[pred_idx]['Date'])
                     current_dow = pred_date.dayofweek
