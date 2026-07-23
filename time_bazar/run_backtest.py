@@ -14,7 +14,7 @@ from src.validator import (
     build_calibration, run_feature_ablation, save_state,
 )
 
-MARKET_NAME = "KALYAN"
+MARKET_NAME = "TIME BAZAR"
 
 def main():
     print(f"\n{'#'*70}")
