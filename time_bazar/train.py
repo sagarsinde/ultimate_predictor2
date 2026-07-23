@@ -14,7 +14,7 @@ from src.features import load_raw_data, slice_window, get_window_size, build_fea
 from src.models import MODEL_TYPES, FEATURE_MODELS, SEQUENCE_MODELS
 
 def train_full_data():
-    print(f"\n--- Training Full Data Models for KALYAN ---")
+    print(f"\n--- Training Full Data Models for TIME BAZAR ---")
     
     df = load_raw_data()
     
