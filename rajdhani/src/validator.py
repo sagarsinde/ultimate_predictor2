@@ -82,13 +82,16 @@ def _train_single_model(model_type, window_label, train_df, active_groups):
     if len(sliced_df) < 10:
         return None, None, None
 
-    feature_df, y_m, y_e, group_cols = build_features(sliced_df, active_groups)
+    feature_df_m, feature_df_e, y_m, y_e, group_cols = build_features(sliced_df, active_groups)
 
     # Drop internal date column for ML
-    feature_cols = [c for c in feature_df.columns if c != '_date']
-    X = feature_df[feature_cols].values
+    feature_cols_m = [c for c in feature_df_m.columns if c != '_date']
+    X_m = feature_df_m[feature_cols_m].values
 
-    if len(X) < 5:
+    feature_cols_e = [c for c in feature_df_e.columns if c != '_date']
+    X_e = feature_df_e[feature_cols_e].values
+
+    if len(X_m) < 5 or len(X_e) < 5:
         return None, None, None
 
     # Morning sequence and Evening sequence for Markov/Frequency
@@ -101,25 +104,25 @@ def _train_single_model(model_type, window_label, train_df, active_groups):
     # Train morning model
     model_m = model_cls()
     if model_type in FEATURE_MODELS:
-        model_m.fit(X, y_m.values)
+        model_m.fit(X_m, y_m.values)
     else:
         model_m.fit(None, None, sequence=m_seq, dow_sequence=dow_seq)
 
     # Train evening model
     model_e = model_cls()
     if model_type in FEATURE_MODELS:
-        model_e.fit(X, y_e.values)
+        model_e.fit(X_e, y_e.values)
     else:
         model_e.fit(None, None, sequence=e_seq, dow_sequence=dow_seq)
 
-    return model_m, model_e, feature_cols
+    return model_m, model_e, feature_cols_m
 
 
-def _predict_single(model_m, model_e, model_type, X_pred, last_m_digit, last_e_digit, current_dow=None):
+def _predict_single(model_m, model_e, model_type, X_pred_m, X_pred_e, last_m_digit, last_e_digit, current_dow=None):
     """Get probability distributions from a trained model pair."""
     if model_type in FEATURE_MODELS:
-        m_probs = model_m.predict_proba(X_pred)
-        e_probs = model_e.predict_proba(X_pred)
+        m_probs = model_m.predict_proba(X_pred_m)
+        e_probs = model_e.predict_proba(X_pred_e)
     else:
         m_probs = model_m.predict_proba(last_digit=last_m_digit, current_dow=current_dow)
         e_probs = model_e.predict_proba(last_digit=last_e_digit, current_dow=current_dow)
@@ -254,13 +257,17 @@ def run_walk_forward(
                     if len(context_sliced) < 5:
                         continue
 
-                    feat_df, _, _, _ = build_features(context_sliced, active_groups)
-                    if len(feat_df) == 0:
+                    feat_df_m, feat_df_e, _, _, _ = build_features(context_sliced, active_groups)
+                    if len(feat_df_m) == 0:
                         continue
 
-                    last_row_feats = feat_df.iloc[[-1]]
-                    feat_only = [c for c in last_row_feats.columns if c != '_date']
-                    X_pred = last_row_feats[feat_only].values
+                    last_row_feats_m = feat_df_m.iloc[[-1]]
+                    feat_only_m = [c for c in last_row_feats_m.columns if c != '_date']
+                    X_pred_m = last_row_feats_m[feat_only_m].values
+                    
+                    last_row_feats_e = feat_df_e.iloc[[-1]]
+                    feat_only_e = [c for c in last_row_feats_e.columns if c != '_date']
+                    X_pred_e = last_row_feats_e[feat_only_e].values
 
                     last_m = int(context_df.iloc[-1]['Morning_number'])
                     last_e = int(context_df.iloc[-1]['Evening_number'])
@@ -269,7 +276,7 @@ def run_walk_forward(
                     current_dow = pred_date.dayofweek
 
                     m_probs, e_probs = _predict_single(
-                        model_m, model_e, mt, X_pred, last_m, last_e, current_dow
+                        model_m, model_e, mt, X_pred_m, X_pred_e, last_m, last_e, current_dow
                     )
 
                     predictions.append((m_probs, e_probs))
