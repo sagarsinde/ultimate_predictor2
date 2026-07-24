@@ -14,10 +14,10 @@ from collections import Counter
 # ---------------------------------------------------------------------------
 # Market configurations (Hardcoded for Rajdhani)
 # ---------------------------------------------------------------------------
-CSV_PATH = 'data/dataset.csv'
+CSV_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'data', 'dataset.csv')
 DAY_COL = 'Day_of_Week'
 PLAYING_DAYS_PER_WEEK = 6
-DRAWS_PER_MONTH = 26
+DRAWS_PER_MONTH = 22
 
 # ---------------------------------------------------------------------------
 # Feature group registry — each group can be toggled on/off for ablation
@@ -347,7 +347,11 @@ def build_prediction_features(
     Build features and return ONLY the last row's feature vector.
     Used for inference (predicting the next draw).
     """
-    feature_df_m, feature_df_e, _, _, group_columns = build_features(df, active_groups)
+    # Append a dummy row so build_features calculates the feature vector for tomorrow
+    dummy = pd.DataFrame({'Date': [pd.to_datetime('2099-12-31')], 'Morning_number': [0], 'Evening_number': [0]})
+    df_extended = pd.concat([df, dummy], ignore_index=True)
+    
+    feature_df_m, feature_df_e, _, _, group_columns = build_features(df_extended, active_groups)
     last_features_m = feature_df_m.iloc[[-1]].copy()
     last_features_e = feature_df_e.iloc[[-1]].copy()
 

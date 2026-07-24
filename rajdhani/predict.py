@@ -56,7 +56,7 @@ def run_prediction():
     
     print(f"\nLast Draw: {last_date}  -->  Predicting For: {pred_date.strftime('%Y-%m-%d (%A)')}")
     
-    weights_m, weights_e = None, None
+    weights = None
     thresholds_m, thresholds_e = None, None
     surviving_groups = ALL_FEATURE_GROUPS
     
@@ -64,8 +64,7 @@ def run_prediction():
     if os.path.exists(state_path):
         with open(state_path, 'r') as f:
             state = json.load(f)
-        weights_m = state.get('weights_m', {})
-        weights_e = state.get('weights_e', {})
+        weights = state.get('weights', {})
         thresholds_m = state.get('thresholds_m', {})
         thresholds_e = state.get('thresholds_e', {})
         surviving_groups = state.get('surviving_groups', ALL_FEATURE_GROUPS)
@@ -86,47 +85,48 @@ def run_prediction():
 
     print("\n--- Model Predictions ---")
     
-    active_m_keys = set(weights_m.keys()) if weights_m else None
-    active_e_keys = set(weights_e.keys()) if weights_e else None
+    active_keys = set(weights.keys()) if weights else None
 
     for name, ModelClass in MODEL_TYPES.items():
         if name == 'ag': continue
         
-        # In full_data training, models are saved as full_xgb_morning
         for window in ['1m', '2m', '3m', 'full']:
             model_id = f"{window}_{name}"
             
+            # Skip models not in the pruned set
+            if active_keys is not None and model_id not in active_keys:
+                continue
+            
+            w = weights[model_id] if weights and model_id in weights else 1.0
+            
             # Morning
-            if active_m_keys is None or model_id in active_m_keys:
-                model_m = ModelClass()
-                try:
-                    model_m.load_models(dir_path, f"{model_id}_morning")
-                    probs_m = model_m.predict_proba(X_m_last, last_digits=seq_m, current_dow=current_dow)
-                    w = weights_m[model_id] if weights_m else 1.0
-                    final_probs_m += probs_m * w
-                    loaded_m.append(model_id)
-                except Exception:
-                    pass
+            model_m = ModelClass()
+            try:
+                model_m.load_models(dir_path, f"{model_id}_morning")
+                probs_m = model_m.predict_proba(X_m_last, last_digits=seq_m, current_dow=current_dow)
+                final_probs_m += probs_m * w
+                loaded_m.append(model_id)
+            except Exception:
+                pass
             
             # Evening
-            if active_e_keys is None or model_id in active_e_keys:
-                model_e = ModelClass()
-                try:
-                    model_e.load_models(dir_path, f"{model_id}_evening")
-                    probs_e = model_e.predict_proba(X_e_last, last_digits=seq_e, current_dow=current_dow)
-                    w = weights_e[model_id] if weights_e else 1.0
-                    final_probs_e += probs_e * w
-                    loaded_e.append(model_id)
-                except Exception:
-                    pass
+            model_e = ModelClass()
+            try:
+                model_e.load_models(dir_path, f"{model_id}_evening")
+                probs_e = model_e.predict_proba(X_e_last, last_digits=seq_e, current_dow=current_dow)
+                final_probs_e += probs_e * w
+                loaded_e.append(model_id)
+            except Exception:
+                pass
 
     if not loaded_m and not loaded_e:
         print("Error: No models were successfully loaded! Check if the models folder has files.")
         return
 
     # Normalize if not using state weights
-    if not weights_m and sum(final_probs_m) > 0: final_probs_m /= sum(final_probs_m)
-    if not weights_e and sum(final_probs_e) > 0: final_probs_e /= sum(final_probs_e)
+    if not weights and sum(final_probs_m) > 0: final_probs_m /= sum(final_probs_m)
+    if not weights and sum(final_probs_e) > 0: final_probs_e /= sum(final_probs_e)
+
 
     print(f"Loaded {len(loaded_m)} Morning Models")
     print(f"Loaded {len(loaded_e)} Evening Models")
