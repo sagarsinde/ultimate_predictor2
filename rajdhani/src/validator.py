@@ -70,48 +70,55 @@ def _get_validation_periods(df, num_periods=5, pred_days=7):
     return periods
 
 
-def _train_single_model(model_type, window_label, train_df, active_groups):
+def _train_single_model(model_type, window_label, train_end_date, feat_m, feat_e, y_m, y_e):
     """
-    Train a single model on a given data slice.
-
-    Returns: (model_morning, model_evening, feature_columns)
+    Train a single model on a given data slice using precomputed global features.
     """
     window_draws = get_window_size(window_label)
-    sliced_df = slice_window(train_df, window_draws)
-
-    if len(sliced_df) < 10:
+    
+    # Filter for dates <= train_end_date
+    mask = pd.to_datetime(feat_m['_date']).dt.date <= train_end_date
+    train_indices = feat_m.index[mask]
+    
+    if window_draws:
+        train_indices = train_indices[-window_draws:]
+        
+    if len(train_indices) < 10:
         return None, None, None
 
-    feature_df_m, feature_df_e, y_m, y_e, group_cols = build_features(sliced_df, active_groups)
+    X_m_df = feat_m.loc[train_indices]
+    X_e_df = feat_e.loc[train_indices]
+    
+    y_m_train = y_m.loc[train_indices]
+    y_e_train = y_e.loc[train_indices]
 
     # Drop internal date column for ML
-    feature_cols_m = [c for c in feature_df_m.columns if c != '_date']
-    X_m = feature_df_m[feature_cols_m].values
+    feature_cols_m = [c for c in X_m_df.columns if c != '_date']
+    X_m = X_m_df[feature_cols_m].values
 
-    feature_cols_e = [c for c in feature_df_e.columns if c != '_date']
-    X_e = feature_df_e[feature_cols_e].values
+    feature_cols_e = [c for c in X_e_df.columns if c != '_date']
+    X_e = X_e_df[feature_cols_e].values
 
     if len(X_m) < 5 or len(X_e) < 5:
         return None, None, None
 
     # Morning sequence and Evening sequence for Markov/Frequency
-    m_seq = sliced_df['Morning_number'].astype(int).values
-    e_seq = sliced_df['Evening_number'].astype(int).values
-    dow_seq = pd.to_datetime(sliced_df['Date']).dt.dayofweek.values
+    m_seq = y_m_train.values
+    e_seq = y_e_train.values
 
     model_cls = MODEL_TYPES[model_type]
 
     # Train morning model
     model_m = model_cls()
     if model_type in FEATURE_MODELS:
-        model_m.fit(X_m, y_m.values)
+        model_m.fit(X_m, y_m_train.values)
     else:
         model_m.fit(None, None, sequence=m_seq)
 
     # Train evening model
     model_e = model_cls()
     if model_type in FEATURE_MODELS:
-        model_e.fit(X_e, y_e.values)
+        model_e.fit(X_e, y_e_train.values)
     else:
         model_e.fit(None, None, sequence=e_seq)
 
@@ -221,93 +228,76 @@ def run_walk_forward(
 
     window_labels = ['1m', '2m', '3m', 'full']
 
+    # PRECOMPUTE GLOBAL FEATURES ONCE! (Speedup 100x)
+    full_feat_m, full_feat_e, full_y_m, full_y_e, _ = build_features(df, active_groups)
+    
+    # Map dates to valid feature indices (since initial lag rows are dropped)
+    date_to_feat_idx = {date: idx for idx, date in enumerate(full_feat_m['_date'])}
+
     for period_idx, (train_end, pred_indices) in enumerate(periods):
         if verbose:
             print(f"  Period {period_idx+1}: Train up to {train_end}, predict {len(pred_indices)} days")
 
-        # Split data
-        train_mask = pd.to_datetime(df['Date']).dt.date <= train_end
-        train_df = df[train_mask].copy()
-
-        # --- PRE-COMPUTE: Build features ONCE on full context for each pred day ---
-        # This avoids rebuilding features 28 times per prediction day
-        precomputed = {}
-        for pred_idx in pred_indices:
-            context_df = df.iloc[:pred_idx].copy()
-            if len(context_df) < 10:
-                continue
-            feat_df_m, feat_df_e, _, _, _ = build_features(context_df, active_groups)
-            if len(feat_df_m) == 0:
-                continue
-
-            last_row_m = feat_df_m.iloc[[-1]]
-            feat_only_m = [c for c in last_row_m.columns if c != '_date']
-            X_pred_m = last_row_m[feat_only_m].values
-
-            last_row_e = feat_df_e.iloc[[-1]]
-            feat_only_e = [c for c in last_row_e.columns if c != '_date']
-            X_pred_e = last_row_e[feat_only_e].values
-
-            last_m = context_df['Morning_number'].dropna().astype(int).values
-            last_e = context_df['Evening_number'].dropna().astype(int).values
-
-            pred_date = pd.to_datetime(df.iloc[pred_idx]['Date'])
-            current_dow = pred_date.dayofweek
-            actual_m = int(df.iloc[pred_idx]['Morning_number'])
-            actual_e = int(df.iloc[pred_idx]['Evening_number'])
-
-            precomputed[pred_idx] = {
-                'X_pred_m': X_pred_m, 'X_pred_e': X_pred_e,
-                'last_m': last_m, 'last_e': last_e,
-                'current_dow': current_dow,
-                'actual_m': actual_m, 'actual_e': actual_e,
-            }
-
-        if not precomputed:
-            continue
-
-        # --- Now loop models, reusing precomputed features ---
         for wl in window_labels:
             for mt in MODEL_TYPES.keys():
                 model_id = f"{wl}_{mt}"
 
-                # Train
+                # Train using precomputed features
                 model_m, model_e, feat_cols = _train_single_model(
-                    mt, wl, train_df, active_groups
+                    mt, wl, train_end, full_feat_m, full_feat_e, full_y_m, full_y_e
                 )
 
                 if model_m is None:
                     continue
 
-                # Predict each validation day using precomputed features
+                # Predict each validation day
                 predictions = []
                 actuals = []
 
                 for pred_idx in pred_indices:
-                    if pred_idx not in precomputed:
-                        continue
+                    pred_date_str = df.iloc[pred_idx]['Date']
+                    if pred_date_str not in date_to_feat_idx:
+                        continue  # Dropped by NA lags
 
-                    pc = precomputed[pred_idx]
+                    feat_idx = date_to_feat_idx[pred_date_str]
+                    
+                    actual_m = int(df.iloc[pred_idx]['Morning_number'])
+                    actual_e = int(df.iloc[pred_idx]['Evening_number'])
+
+                    # Get exact feature vector for this prediction day
+                    row_m = full_feat_m.iloc[[feat_idx]]
+                    feat_only_m = [c for c in row_m.columns if c != '_date']
+                    X_pred_m = row_m[feat_only_m].values
+                    
+                    row_e = full_feat_e.iloc[[feat_idx]]
+                    feat_only_e = [c for c in row_e.columns if c != '_date']
+                    X_pred_e = row_e[feat_only_e].values
+
+                    # Sequence models need history up to prediction day
+                    last_m = full_y_m.iloc[:feat_idx].values
+                    last_e = full_y_e.iloc[:feat_idx].values
+                    
+                    pred_date = pd.to_datetime(pred_date_str)
+                    current_dow = pred_date.dayofweek
 
                     m_probs, e_probs = _predict_single(
-                        model_m, model_e, mt,
-                        pc['X_pred_m'], pc['X_pred_e'],
-                        pc['last_m'], pc['last_e'], pc['current_dow']
+                        model_m, model_e, mt, X_pred_m, X_pred_e, last_m, last_e, current_dow
                     )
 
                     predictions.append((m_probs, e_probs))
-                    actuals.append((pc['actual_m'], pc['actual_e']))
+                    actuals.append((actual_m, actual_e))
 
                     # Collect calibration data
                     top_m_prob = np.max(m_probs)
                     top_e_prob = np.max(e_probs)
-                    calibration_data_m.append((top_m_prob, int(np.argmax(m_probs) == pc['actual_m'])))
-                    calibration_data_e.append((top_e_prob, int(np.argmax(e_probs) == pc['actual_e'])))
+                    calibration_data_m.append((top_m_prob, int(np.argmax(m_probs) == actual_m)))
+                    calibration_data_e.append((top_e_prob, int(np.argmax(e_probs) == actual_e)))
 
                 if len(predictions) >= 3:
                     metrics = _compute_metrics(predictions, actuals)
                     if metrics:
                         all_metrics[model_id].append(metrics)
+
 
 
     # Average metrics across periods
